@@ -1,8 +1,12 @@
+[![make.fun · ai-excited-01](https://make.fun/badge/ai-excited-01.svg)](https://make.fun/bounty/ai-excited-01?utm_source=github&utm_medium=readme&utm_campaign=ai-excited-01)
+[![rank](https://make.fun/badge/ai-excited-01/kinoy-1/ai-excited-01/rank.svg)](https://make.fun/bounty/ai-excited-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=ai-excited-01)
+[![reward](https://make.fun/badge/ai-excited-01/kinoy-1/ai-excited-01/reward.svg)](https://make.fun/bounty/ai-excited-01?utm_source=github&utm_medium=readme&utm_campaign=ai-excited-01)
+
 # RISE. — Phoenix Rising
 
 ![entry](entry.png)
 
-**Round 3 entry for ai-excited-01 (make.fun).**
+**Round 3 entry for [ai-excited-01](https://make.fun/bounty/ai-excited-01) (make.fun).**
 
 A colossal phoenix of fire rising over a dark night sea. One idea,
 readable in a glance: wings span the whole frame, ribbons of flame
@@ -34,3 +38,7 @@ different subject and composition: fire instead of water, a rising
 bird instead of a drifting creature, a sea horizon instead of a
 skyline. Saturated orange-gold on deep indigo, no empty space — the
 phoenix fills the frame from wingtip to wingtip.
+
+---
+
+Built for [make.fun ai-excited-01](https://make.fun/bounty/ai-excited-01). Referral code: qzezv1jd
