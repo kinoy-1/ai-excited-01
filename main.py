@@ -204,34 +204,65 @@ def wing(mirror):
 
 
 def draw_body():
-    # layered body: deep red shell -> orange -> gold -> bright core
-    # body: flame-licked stack — bright core sinks toward the belly,
-    # so the rings read as fire, not a target
-    fill_ellipse(512, 500, 98, 172, (150, 18, 8))
-    fill_ellipse(512, 515, 78, 145, (255, 106, 0))
-    fill_ellipse(512, 530, 54, 115, (255, 179, 0))
-    fill_ellipse(512, 548, 32, 80, (255, 210, 63))
-    fill_ellipse(512, 560, 14, 42, (255, 240, 160))
+    # POLISH (round 3): the old body read as a flat oval "egg" because the
+    # bright core sat dead-centre in concentric rings. Fix, same palette
+    # and composition:
+    #  1. bright core drops to the BELLY (low, small) — glowing belly,
+    #     not a target centre;
+    #  2. dark flank shading gives the torso roundness/depth;
+    #  3. overlapping flank feathers + flame tufts scallop the outline
+    #     so the silhouette is no longer a smooth oval;
+    #  4. head slightly larger, two-tone beak, brow + cheek.
+    # --- torso base: deep red shell
+    fill_ellipse(512, 505, 96, 168, (150, 18, 8))
+    # dark flank shading: roundness, edges darker than the centre
+    fill_ellipse(436, 515, 20, 128, (96, 8, 4))
+    fill_ellipse(588, 515, 20, 128, (96, 8, 4))
+    # warm mid layers, sinking toward the belly
+    fill_ellipse(512, 520, 70, 135, (222, 52, 0))
+    fill_ellipse(512, 540, 50, 105, (255, 106, 0))
+    # bright belly core (low) + cream heart
+    fill_ellipse(512, 578, 32, 68, (255, 210, 63))
+    fill_ellipse(512, 588, 15, 38, (255, 240, 160))
+    # chest flame flickers: small gold tongues on the upper chest
+    # (upward = flame licks; the dark chevrons read as a stray face)
+    for cx, cy in [(486, 470), (538, 470), (512, 496)]:
+        fill_poly([(cx - 10, cy + 10), (cx, cy - 12), (cx + 10, cy + 10)],
+                  (255, 210, 63))
+    # flank feathers: overlapping flame feathers sticking OUT past the
+    # oval edge — breaks the silhouette on both sides (symmetric)
+    for side in (-1, 1):
+        for i, (fy, fr) in enumerate([(448, 42), (498, 50),
+                                      (548, 55), (598, 48), (640, 38)]):
+            fx = 512 + side * 78
+            col = (255, 138, 0) if i % 2 == 0 else (255, 179, 0)
+            fill_ellipse(fx, fy, 46, 15, col, rot_deg=side * fr)
+    # flame tufts past the bottom edge, over the tail ribbons
+    fill_poly([(470, 668), (462, 622), (484, 662)], (222, 52, 0))
+    fill_poly([(512, 682), (502, 632), (524, 672)], (255, 138, 0))
+    fill_poly([(554, 668), (544, 622), (562, 662)], (222, 52, 0))
     # dark collar at the neck base hides the neck/body seam
-    fill_ellipse(512, 392, 55, 30, (150, 18, 8))
-    # dark flame tufts on the belly break the ring pattern
-    fill_poly([(470, 622), (462, 590), (480, 616)], (150, 18, 8))
-    fill_poly([(512, 652), (503, 616), (522, 644)], (150, 18, 8))
-    fill_poly([(554, 622), (546, 590), (564, 616)], (150, 18, 8))
-    # neck
+    fill_ellipse(512, 392, 58, 30, (150, 18, 8))
+    # neck (tapered) + darker left edge for depth
     fill_poly([(490, 385), (534, 385), (545, 300), (505, 290)], (255, 138, 0))
     fill_poly([(500, 380), (528, 380), (534, 305), (510, 298)], (255, 179, 0))
-    # head
-    fill_ellipse(522, 262, 42, 34, (255, 179, 0))
-    # beak, pointing up-right
-    fill_poly([(548, 250), (596, 258), (548, 270)], (255, 210, 63))
+    fill_poly([(490, 385), (498, 385), (505, 300), (498, 292)], (200, 40, 0))
+    # head: slightly larger, rounder
+    fill_ellipse(522, 260, 46, 37, (255, 179, 0))
+    # cheek patch below the eye
+    fill_ellipse(528, 278, 16, 10, (255, 150, 0))
+    # beak, two-tone: gold upper + darker lower, pointing up-right
+    fill_poly([(550, 246), (600, 256), (550, 268)], (255, 210, 63))
+    fill_poly([(550, 268), (592, 264), (552, 278)], (200, 90, 0))
+    # brow line above the eye (fierce, defined)
+    fill_poly([(512, 244), (542, 238), (544, 246), (514, 252)], (150, 18, 8))
     # eye + glint
-    fill_ellipse(530, 254, 7, 7, (26, 10, 0))
-    blend_px(532, 252, (255, 255, 255), 220)
-    # crest: three flame feathers
-    fill_poly([(505, 238), (492, 178), (515, 225)], (255, 106, 0))
-    fill_poly([(522, 234), (520, 164), (542, 228)], (255, 179, 0))
-    fill_poly([(538, 240), (556, 186), (558, 232)], (255, 210, 63))
+    fill_ellipse(532, 254, 7, 7, (26, 10, 0))
+    blend_px(534, 252, (255, 255, 255), 220)
+    # crest: three flame feathers (slightly longer)
+    fill_poly([(505, 238), (490, 172), (515, 225)], (255, 106, 0))
+    fill_poly([(522, 234), (520, 158), (542, 228)], (255, 179, 0))
+    fill_poly([(538, 240), (558, 182), (558, 232)], (255, 210, 63))
 
 
 def draw_embers(rng):
