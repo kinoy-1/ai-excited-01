@@ -1,520 +1,347 @@
 #!/usr/bin/env python3
-"""The Jellyfish That Ate the Skyline.
+"""ai-excited-01 round 3 — "RISE."
+A colossal phoenix of fire rising over a dark night sea.
+One idea, instantly readable: wings span the whole frame, tail ribbons
+of flame stream down into the water, embers fill the air, and the word
+RISE. anchors the bottom.
 
-A colossal bioluminescent jellyfish drifts down over a sleeping city at
-night: one huge glowing bell, a curtain of tentacles, a beam of light on
-the rooftops, and a tiny aeroplane for scale.
-
-Python 3.13, standard library only. Everything is drawn procedurally on a
-1024x1024 pixel buffer and written out with a hand-rolled PNG encoder.
-Fixed seed, fully deterministic: run it twice and the bytes are identical.
-
-Usage:  python3 main.py   # writes entry.png next to this file, or to
-                           # $MAKEFUN_OUTPUT_DIR/entry.png when that is set.
+Pure Python stdlib only. Hand-written PNG encoder (zlib + struct).
+Fixed seed -> fully deterministic: two runs produce identical bytes.
+Run:  python3 main.py   (writes entry.png, 1024x1024)
 """
-
 import math
-import os
 import random
 import struct
 import zlib
-from binascii import crc32
 
-W, H = 1024, 1024
+W = H = 1024
 SEED = 20261116
-rng = random.Random(SEED)
+
+buf = bytearray(W * H * 3)
 
 
-# ---------------------------------------------------------------- canvas
-class Canvas:
-    """A plain RGB pixel buffer with source-over blending helpers."""
-
-    def __init__(self, w, h):
-        self.w = w
-        self.h = h
-        self.rows = [bytearray(w * 3) for _ in range(h)]
-
-    def put(self, x, y, rgb):
-        if 0 <= x < self.w and 0 <= y < self.h:
-            i = x * 3
-            row = self.rows[y]
-            row[i] = rgb[0]
-            row[i + 1] = rgb[1]
-            row[i + 2] = rgb[2]
-
-    def blend(self, x, y, rgb, alpha):
-        """Blend rgb over the pixel at (x, y); alpha 0..1."""
-        if 0 <= x < self.w and 0 <= y < self.h and alpha > 0.0:
-            i = x * 3
-            row = self.rows[y]
-            if alpha >= 1.0:
-                row[i] = rgb[0]
-                row[i + 1] = rgb[1]
-                row[i + 2] = rgb[2]
-            else:
-                ia = 1.0 - alpha
-                row[i] = int(row[i] * ia + rgb[0] * alpha)
-                row[i + 1] = int(row[i + 1] * ia + rgb[1] * alpha)
-                row[i + 2] = int(row[i + 2] * ia + rgb[2] * alpha)
-
-    def disc(self, cx, cy, r, rgb, alpha=1.0):
-        """Filled circle, blended."""
-        r = int(r)
-        if r <= 0:
-            return
-        x0 = max(0, cx - r)
-        x1 = min(self.w - 1, cx + r)
-        y0 = max(0, cy - r)
-        y1 = min(self.h - 1, cy + r)
-        r2 = r * r
-        for y in range(y0, y1 + 1):
-            dy = y - cy
-            dx = int(math.sqrt(max(0, r2 - dy * dy)))
-            for x in range(max(x0, cx - dx), min(x1, cx + dx) + 1):
-                self.blend(x, y, rgb, alpha)
-
-    def rect(self, x, y, w, h, rgb, alpha=1.0):
-        x0 = max(0, x)
-        y0 = max(0, y)
-        x1 = min(self.w, x + w)
-        y1 = min(self.h, y + h)
-        for yy in range(y0, y1):
-            for xx in range(x0, x1):
-                self.blend(xx, yy, rgb, alpha)
-
-    def fill_row(self, y, rgb):
-        """Paint one whole scanline a solid colour (fast path)."""
-        self.rows[y][:] = bytes(rgb) * self.w
+def lerp(c1, c2, t):
+    return (int(c1[0] + (c2[0] - c1[0]) * t),
+            int(c1[1] + (c2[1] - c1[1]) * t),
+            int(c1[2] + (c2[2] - c1[2]) * t))
 
 
-def lerp(a, b, t):
-    return a + (b - a) * t
+def span(x0, x1, y, color):
+    """Fill a horizontal run with a solid color (fast slice assign)."""
+    x0 = max(0, int(x0))
+    x1 = min(W - 1, int(x1))
+    if x1 < x0 or y < 0 or y >= H:
+        return
+    i = (y * W + x0) * 3
+    buf[i:i + (x1 - x0 + 1) * 3] = bytes(color) * (x1 - x0 + 1)
 
 
-def lerp3(c0, c1, t):
-    return (int(lerp(c0[0], c1[0], t)),
-            int(lerp(c0[1], c1[1], t)),
-            int(lerp(c0[2], c1[2], t)))
+def span_alpha(x0, x1, y, color, a):
+    x0 = max(0, int(x0))
+    x1 = min(W - 1, int(x1))
+    if x1 < x0 or y < 0 or y >= H or a <= 0:
+        return
+    for x in range(x0, x1 + 1):
+        blend_px(x, y, color, a)
 
 
-def lut_gradient(stops, size=256):
-    """Build a lookup table of RGB triples from [(pos, rgb), ...] stops."""
-    table = []
-    for i in range(size):
-        t = i / (size - 1)
-        for j in range(len(stops) - 1):
-            p0, c0 = stops[j]
-            p1, c1 = stops[j + 1]
-            if p0 <= t <= p1:
-                f = 0.0 if p1 == p0 else (t - p0) / (p1 - p0)
-                table.append(lerp3(c0, c1, f))
-                break
-        else:
-            table.append(stops[-1][1])
-    return table
+def blend_px(x, y, color, a):
+    if a <= 0 or x < 0 or x >= W or y < 0 or y >= H:
+        return
+    i = (y * W + x) * 3
+    inv = 255 - a
+    buf[i] = (color[0] * a + buf[i] * inv) // 255
+    buf[i + 1] = (color[1] * a + buf[i + 1] * inv) // 255
+    buf[i + 2] = (color[2] * a + buf[i + 2] * inv) // 255
 
 
-cv = Canvas(W, H)
+def fill_poly(pts, color):
+    """Scanline polygon fill."""
+    ys = [p[1] for p in pts]
+    y0 = max(0, int(min(ys)))
+    y1 = min(H - 1, int(max(ys)))
+    n = len(pts)
+    for y in range(y0, y1 + 1):
+        xs = []
+        for i in range(n):
+            x0, ya = pts[i]
+            x1, yb = pts[(i + 1) % n]
+            if (ya <= y < yb) or (yb <= y < ya):
+                t = (y - ya) / (yb - ya)
+                xs.append(x0 + t * (x1 - x0))
+        xs.sort()
+        for k in range(0, len(xs) - 1, 2):
+            span(xs[k], xs[k + 1], y, color)
 
 
-# ---------------------------------------------------------------- night sky
-def paint_sky():
-    """Deep indigo at the top, a touch lighter and warmer near the horizon."""
-    stops = [(0.0, (7, 9, 34)),
-             (0.45, (13, 14, 48)),
-             (0.75, (22, 20, 62)),
-             (1.0, (33, 28, 76))]
-    table = lut_gradient(stops, H)
-    for y in range(H):
-        cv.fill_row(y, table[y])
+def ellipse_poly(cx, cy, rx, ry, rot_deg=0.0, n=30):
+    rot = math.radians(rot_deg)
+    cr, sr = math.cos(rot), math.sin(rot)
+    pts = []
+    for k in range(n):
+        t = 2.0 * math.pi * k / n
+        ex, ey = rx * math.cos(t), ry * math.sin(t)
+        pts.append((cx + ex * cr - ey * sr, cy + ex * sr + ey * cr))
+    return pts
 
 
-def paint_clouds():
-    """Faint translucent discs in loose horizontal bands, barely there."""
-    bands = [(70, 170), (180, 320), (330, 470)]
-    for (y0, y1) in bands:
-        for _ in range(5):
-            cx = rng.randint(40, W - 40)
-            cy = rng.randint(y0, y1)
-            rx = rng.randint(60, 150)
-            ry = rng.randint(18, 42)
-            tone = rng.choice([(46, 42, 92), (58, 50, 104), (36, 34, 80)])
-            a = rng.uniform(0.05, 0.11)
-            for yy in range(max(0, cy - ry), min(H, cy + ry + 1)):
-                dy = (yy - cy) / ry
-                half = int(rx * math.sqrt(max(0.0, 1.0 - dy * dy)))
-                for xx in range(max(0, cx - half), min(W, cx + half + 1)):
-                    cv.blend(xx, yy, tone, a)
+def fill_ellipse(cx, cy, rx, ry, color, rot_deg=0.0):
+    fill_poly(ellipse_poly(cx, cy, rx, ry, rot_deg), color)
 
 
-def paint_stars():
-    """Pinprick stars, plus a handful of bright four-point sparkles."""
-    for _ in range(260):
-        x = rng.randint(0, W - 1)
-        y = rng.randint(0, 760)
-        b = rng.randint(140, 255)
-        warm = rng.random() < 0.25
-        col = (b, int(b * 0.92), int(b * 0.78)) if warm else (int(b * 0.85), int(b * 0.9), b)
-        cv.put(x, y, col)
-        if rng.random() < 0.12:
-            cv.put(x + 1, y, col)
-    for _ in range(14):
-        x = rng.randint(20, W - 20)
-        y = rng.randint(20, 620)
-        arm = rng.randint(4, 8)
-        col = (225, 240, 255)
-        for d in range(-arm, arm + 1):
-            cv.blend(x + d, y, col, 0.85)
-            cv.blend(x, y + d, col, 0.85)
-        cv.put(x, y, (255, 255, 255))
-
-
-# ---------------------------------------------------------------- the bell
-BELL_CX, BELL_CY = 512, 352
-BELL_RX, BELL_RY = 342, 232
-
-BELL_STOPS = [(0.00, (238, 255, 255)),
-              (0.22, (158, 236, 255)),
-              (0.48, (122, 185, 252)),
-              (0.72, (158, 128, 246)),
-              (0.90, (196, 104, 238)),
-              (1.00, (212, 96, 232))]
-
-
-def paint_bell():
-    """The giant glowing dome: radial gradient, sunburst striations,
-    a bright rim along the top and a scalloped lower margin. A soft halo
-    fades out just past the rim."""
-    table = lut_gradient(BELL_STOPS, 256)
-    glow = (150, 108, 240)
-    cx, cy, rx, ry = BELL_CX, BELL_CY, BELL_RX, BELL_RY
-    ext = 1.38  # halo reaches this far past the rim, in units of the radii
-    y0 = max(0, int(cy - ry * ext))
-    y1 = min(H - 1, int(cy + ry * ext))
+def radial_glow(cx, cy, rx, ry, color, peak):
+    """Soft radial glow: one clipped pass over the bounding box."""
+    x0 = max(0, int(cx - rx))
+    x1 = min(W - 1, int(cx + rx))
+    y0 = max(0, int(cy - ry))
+    y1 = min(H - 1, int(cy + ry))
     for y in range(y0, y1 + 1):
         dy = (y - cy) / ry
         dy2 = dy * dy
-        if dy2 >= ext * ext:
-            continue
-        half = rx * math.sqrt(ext * ext - dy2)
-        x0 = max(0, int(cx - half))
-        x1 = min(W - 1, int(cx + half))
         for x in range(x0, x1 + 1):
             dx = (x - cx) / rx
             d2 = dx * dx + dy2
-            if d2 > ext * ext:
-                continue
-            if d2 <= 1.0:
-                d = math.sqrt(d2)
-                col = table[min(255, int(d * 255))]
-                # fine radial striations: a whisper of sunburst texture
-                ang = math.atan2(dy, dx)
-                shimmer = 1.0 + 0.012 * math.sin(ang * 64.0)
-                r = min(255, int(col[0] * shimmer))
-                g = min(255, int(col[1] * shimmer))
-                b = min(255, int(col[2] * shimmer))
-                cv.put(x, y, (r, g, b))
-            else:
-                # halo: soft purple glow fading with distance past the rim
-                fade = (math.sqrt(d2) - 1.0) / (ext - 1.0)
-                cv.blend(x, y, glow, 0.30 * (1.0 - fade) * (1.0 - fade))
-
-    # bright rim: a glowing arc hugging the top edge of the dome
-    for deg in range(-168, -12, 1):
-        a = math.radians(deg)
-        x = int(cx + rx * math.cos(a))
-        y = int(cy + ry * math.sin(a) * 0.98)
-        cv.disc(x, y, 2, (228, 246, 255), 0.6)
-    # scalloped lower margin: soft beads along the bottom edge
-    for deg in range(18, 163, 5):
-        a = math.radians(deg)
-        x = int(cx + rx * math.cos(a))
-        y = int(cy + ry * math.sin(a) * 0.99)
-        cv.disc(x, y, 4, (196, 150, 242), 0.3)
+            if d2 < 1.0:
+                blend_px(x, y, color, int(peak * (1.0 - d2)))
 
 
-# ---------------------------------------------------------------- light beam
-def paint_beam():
-    """A soft cone of light falling from the bell onto the rooftops,
-    plus the pool of light where it lands."""
-    top_y, bot_y = 596, 908
-    top_half, bot_half = 46, 196
-    for y in range(top_y, bot_y + 1):
-        t = (y - top_y) / (bot_y - top_y)
-        half = top_half + (bot_half - top_half) * t
-        alpha = 0.17 * (1.0 - t) + 0.03
-        x0 = int(BELL_CX - half)
-        x1 = int(BELL_CX + half)
-        for x in range(max(0, x0), min(W, x1 + 1)):
-            cv.blend(x, y, (176, 216, 255), alpha)
-    # pool of light on the rooftops, fading softly toward its edges
-    for yy in range(868, 930):
-        dy = (yy - 898) / 34.0
-        if abs(dy) >= 1.0:
-            continue
-        half = int(215 * math.sqrt(1.0 - dy * dy))
-        for xx in range(max(0, BELL_CX - half), min(W, BELL_CX + half + 1)):
-            dxn = (xx - BELL_CX) / 215.0
-            fade = max(0.0, 1.0 - dy * dy) * max(0.0, 1.0 - dxn * dxn)
-            cv.blend(xx, yy, (170, 205, 250), 0.12 * fade)
+# ---------------------------------------------------------------- sky & sea
+
+def draw_sky(rng):
+    top = (7, 11, 36)
+    mid = (20, 16, 66)
+    low = (58, 24, 78)
+    for y in range(0, 830):
+        if y < 420:
+            c = lerp(top, mid, y / 420.0)
+        else:
+            c = lerp(mid, low, (y - 420) / 410.0)
+        span(0, W - 1, y, c)
+    # stars, upper sky only
+    for _ in range(170):
+        x = rng.randint(0, W - 1)
+        y = rng.randint(0, 690)
+        s = rng.random()
+        if s < 0.6:
+            col = (255, 255, 255)
+        elif s < 0.85:
+            col = (170, 200, 255)
+        else:
+            col = (255, 220, 160)
+        a = rng.randint(80, 200)
+        blend_px(x, y, col, a)
+        if rng.random() < 0.12:
+            blend_px(x + 1, y, col, a // 2)
+            blend_px(x, y + 1, col, a // 2)
 
 
-# ---------------------------------------------------------------- tentacles
-def paint_tentacles():
-    """A curtain of thin wavy tentacles hanging from the bell's margin,
-    cyan and magenta, some strung with glowing beads."""
-    cols = [(96, 226, 255), (255, 122, 224), (204, 132, 255), (120, 200, 255)]
-    n = 17
-    for i in range(n):
-        # anchor along the bottom arc of the bell
-        frac = i / (n - 1)
-        ang = math.radians(lerp(22, 158, frac))
-        x0 = int(BELL_CX + BELL_RX * math.cos(ang))
-        y0 = int(BELL_CY + BELL_RY * math.sin(ang) * 0.99)
-        length = rng.randint(170, 380)
-        amp = rng.uniform(7, 20)
-        waves = rng.uniform(2.0, 4.0)  # gentle S-curves, not tight zigzags
-        phase = rng.uniform(0, 6.28)
-        col = cols[i % len(cols)]
-        bead = rng.random() < 0.55
-        steps = length // 2
-        for s in range(steps + 1):
-            t = s / steps
-            y = y0 + int(length * t)
-            if y >= H:
-                break
-            x = int(x0 + amp * math.sin(t * waves * 6.28 + phase)
-                    * (0.4 + 0.6 * t))
-            r = lerp(2.6, 1.0, t)
-            cv.disc(x, y, r, col, 0.92)
-            if bead and s % 18 == 8:
-                cv.disc(x, y, 3.0, (235, 250, 255), 0.7)
+def draw_sea(rng):
+    # soft transition from the warm sky down into the dark water
+    for y in range(800, 870):
+        span(0, W - 1, y, lerp((58, 24, 78), (6, 16, 38), (y - 800) / 70.0))
+    for y in range(870, H):
+        span(0, W - 1, y, lerp((6, 16, 38), (2, 6, 18), (y - 870) / 154.0))
+    # wave strokes
+    for _ in range(26):
+        y = rng.randint(845, 1010)
+        x = rng.randint(0, 800)
+        ln = rng.randint(40, 190)
+        col = (14, 42, 84) if rng.random() < 0.7 else (255, 138, 0)
+        a = rng.randint(40, 120)
+        for xx in range(x, min(W, x + ln)):
+            blend_px(xx, y, col, a)
+    # orange fire reflection under the phoenix
+    for _ in range(260):
+        x = int(rng.gauss(512, 60))
+        y = rng.randint(835, 1010)
+        blend_px(x, y, (255, 122, 0), rng.randint(30, 110))
 
 
-def paint_arms():
-    """Four thick frilly oral arms in the centre, pink ribbons of
-    overlapping discs whose radius pulses along their length."""
-    centres = [428, 478, 530, 580]
-    for k, x0 in enumerate(centres):
-        length = rng.randint(235, 280)
-        phase = rng.uniform(0, 6.28)
-        drift = rng.uniform(-14, 14)
-        y0 = 584
-        steps = length // 3
-        for s in range(steps + 1):
-            t = s / steps
-            y = y0 + int(length * t)
-            x = int(x0 + drift * t + 9.0 * math.sin(t * 5.0 + phase))
-            r = 6.5 + 5.0 * math.sin(t * 26.0 + phase)
-            r = max(2.5, r)
-            cv.disc(x, y, r, (238, 112, 186), 0.95)
-            cv.disc(x, y, r * 0.55, (255, 168, 216), 0.95)
+# ---------------------------------------------------------------- phoenix
+
+def ribbon(x0, phase, width, color):
+    """One flowing tail ribbon: sine-swayed tapered strip, y 610 -> 1010."""
+    left, right = [], []
+    steps = 26
+    for s in range(steps + 1):
+        t = s / steps
+        y = 610 + t * 285
+        cx = x0 + 80 * math.sin(t * 2.4 + phase) * t
+        w = width * (1.0 - 0.72 * t)
+        left.append((cx - w, y))
+        right.append((cx + w, y))
+    fill_poly(left + right[::-1], color)
 
 
-# ---------------------------------------------------------------- the city
-def paint_city():
-    """Dark skyline silhouettes along the bottom, lit windows, a few
-    neon roof lines and one tall tower with a red beacon."""
-    win_cols = [(122, 232, 255), (255, 150, 210), (255, 210, 120),
-                (232, 236, 255), (140, 255, 220)]
-    x = -6
-    while x < W:
-        w = rng.randint(26, 72)
-        h = rng.randint(42, 148)
-        top = H - h
-        tone = rng.choice([(7, 8, 20), (10, 10, 26), (6, 7, 18)])
-        cv.rect(x, top, w, h, tone)
-        # lit windows on a loose grid
-        for wy in range(top + 8, H - 8, 13):
-            for wx in range(x + 5, x + w - 5, 10):
-                if rng.random() < 0.42:
-                    cv.rect(wx, wy, 3, 5, rng.choice(win_cols), 0.95)
-        # neon roof line on some buildings
-        if rng.random() < 0.22:
-            cv.rect(x, top, w, 2, rng.choice([(90, 230, 255), (255, 110, 220)]), 0.9)
-        # antenna on some buildings
-        if rng.random() < 0.18:
-            ax = x + w // 2
-            cv.rect(ax, top - 14, 1, 14, (16, 16, 34))
-            cv.put(ax, top - 15, (255, 70, 70))
-        x += w + rng.randint(0, 8)
-    # the tall tower, right of centre, with its red beacon
-    tx, tw, th = 688, 34, 176
-    cv.rect(tx, H - th, tw, th, (9, 9, 24))
-    for wy in range(H - th + 10, H - 10, 13):
-        for wx in range(tx + 6, tx + tw - 6, 10):
-            if rng.random() < 0.5:
-                cv.rect(wx, wy, 3, 5, rng.choice(win_cols), 0.95)
-    cv.rect(tx + tw // 2 - 1, H - th - 18, 2, 18, (16, 16, 34))
-    cv.disc(tx + tw // 2, H - th - 19, 3, (255, 64, 64), 1.0)
+def wing(mirror):
+    """One wing. mirror=False -> left wing; True -> right wing."""
+    m = -1 if mirror else 1
+
+    def X(x):
+        return 512 + m * (x - 512)
+
+    # base layer (deep red)
+    base = [(440, 430), (310, 320), (180, 255), (95, 250),
+            (150, 350), (260, 450), (430, 490)]
+    fill_poly([(X(x), y) for x, y in base], (150, 18, 8))
+    # mid layer (flame red)
+    mid = [(445, 435), (330, 345), (220, 290), (150, 290),
+           (210, 375), (300, 445), (435, 470)]
+    fill_poly([(X(x), y) for x, y in mid], (222, 52, 0))
+    # feather row along the trailing edge
+    for i in range(7):
+        t = i / 6.0
+        fx = 190 + t * 250
+        fy = 380 + t * 95 + (8 if i % 2 else 0)
+        col = (255, 138, 0) if i % 2 == 0 else (255, 179, 0)
+        fill_ellipse(X(fx), fy, 72, 20, col, rot_deg=m * -42)
+    # long primary tips fanning out
+    for i, (tx, ty, rot) in enumerate([(150, 260, -38),
+                                       (110, 285, -52),
+                                       (85, 320, -66)]):
+        col = (255, 106, 0) if i % 2 == 0 else (255, 179, 0)
+        fill_ellipse(X(tx), ty, 95, 17, col, rot_deg=m * rot)
 
 
-# ---------------------------------------------------------------- scale cues
-def paint_plane():
-    """A tiny aeroplane crossing the sky beside the bell, with a faint
-    contrail trailing behind it."""
-    px, py = 826, 298
-    ink = (14, 14, 30)
-    # fuselage and wings, drawn as short thick strokes of discs
-    for d in range(-13, 14):
-        cv.disc(px + d, py, 2, ink, 0.95)
-    for d in range(-7, 8):
-        cv.disc(px + 2 + d, py - 5 - abs(d) // 3, 1.6, ink, 0.95)
-        cv.disc(px - 4 + d // 2, py + 4, 1.4, ink, 0.95)
-    cv.disc(px - 13, py - 4, 2, ink, 0.95)  # tail fin
-    cv.put(px + 12, py, (255, 80, 80))      # nose light
-    cv.put(px - 2, py - 6, (255, 255, 255))  # wing light
-    # contrail
-    for d in range(0, 120, 3):
-        cv.disc(px + 16 + d, py - 1 - d // 14, 1.6, (220, 230, 255),
-                max(0.0, 0.22 - d * 0.0016))
+def draw_body():
+    # layered body: deep red shell -> orange -> gold -> bright core
+    # body: flame-licked stack — bright core sinks toward the belly,
+    # so the rings read as fire, not a target
+    fill_ellipse(512, 500, 98, 172, (150, 18, 8))
+    fill_ellipse(512, 515, 78, 145, (255, 106, 0))
+    fill_ellipse(512, 530, 54, 115, (255, 179, 0))
+    fill_ellipse(512, 548, 32, 80, (255, 210, 63))
+    fill_ellipse(512, 560, 14, 42, (255, 240, 160))
+    # dark collar at the neck base hides the neck/body seam
+    fill_ellipse(512, 392, 55, 30, (150, 18, 8))
+    # dark flame tufts on the belly break the ring pattern
+    fill_poly([(470, 622), (462, 590), (480, 616)], (150, 18, 8))
+    fill_poly([(512, 652), (503, 616), (522, 644)], (150, 18, 8))
+    fill_poly([(554, 622), (546, 590), (564, 616)], (150, 18, 8))
+    # neck
+    fill_poly([(490, 385), (534, 385), (545, 300), (505, 290)], (255, 138, 0))
+    fill_poly([(500, 380), (528, 380), (534, 305), (510, 298)], (255, 179, 0))
+    # head
+    fill_ellipse(522, 262, 42, 34, (255, 179, 0))
+    # beak, pointing up-right
+    fill_poly([(548, 250), (596, 258), (548, 270)], (255, 210, 63))
+    # eye + glint
+    fill_ellipse(530, 254, 7, 7, (26, 10, 0))
+    blend_px(532, 252, (255, 255, 255), 220)
+    # crest: three flame feathers
+    fill_poly([(505, 238), (492, 178), (515, 225)], (255, 106, 0))
+    fill_poly([(522, 234), (520, 164), (542, 228)], (255, 179, 0))
+    fill_poly([(538, 240), (556, 186), (558, 232)], (255, 210, 63))
 
 
-def paint_birds():
-    """A few tiny birds, just dark chevrons in the sky."""
-    for (bx, by) in [(238, 176), (706, 148), (168, 418), (884, 178)]:
-        for d in range(0, 6):
-            cv.put(bx - d, by - d // 2, (18, 18, 38))
-            cv.put(bx + d, by - d // 2, (18, 18, 38))
+def draw_embers(rng):
+    for _ in range(240):
+        x = rng.randint(60, 964)
+        y = rng.randint(140, 960)
+        r = rng.random()
+        if r < 0.5:
+            col = (255, 210, 63)
+        elif r < 0.8:
+            col = (255, 138, 0)
+        else:
+            col = (255, 45, 120)
+        a = rng.randint(100, 220)
+        s = 1 if rng.random() < 0.7 else 2
+        for dx in range(s):
+            for dy in range(s):
+                blend_px(x + dx, y + dy, col, a)
+        if rng.random() < 0.15:  # short falling streak
+            for k in range(1, 5):
+                blend_px(x, y + k, col, a // (k + 1))
+    # a few big glowing embers
+    for _ in range(6):
+        x = rng.randint(150, 874)
+        y = rng.randint(200, 850)
+        radial_glow(x, y, 10, 10, (255, 150, 0), 120)
 
 
-# ---------------------------------------------------------------- the words
-GLYPHS = {
-    "L": ("#....",
-          "#....",
-          "#....",
-          "#....",
-          "#....",
-          "#....",
-          "#####"),
-    "O": (".###.",
-          "#...#",
-          "#...#",
-          "#...#",
-          "#...#",
-          "#...#",
-          ".###."),
-    "K": ("#...#",
-          "#..#.",
-          "#.#..",
-          "##...",
-          "#.#..",
-          "#..#.",
-          "#...#"),
-    "U": ("#...#",
-          "#...#",
-          "#...#",
-          "#...#",
-          "#...#",
-          "#...#",
-          ".###."),
-    "P": ("####.",
-          "#...#",
-          "#...#",
-          "####.",
-          "#....",
-          "#....",
-          "#...."),
-    ".": (".....",
-          ".....",
-          ".....",
-          ".....",
-          ".....",
-          ".....",
-          ".##.."),
-    " ": (".....",
-          ".....",
-          ".....",
-          ".....",
-          ".....",
-          ".....",
-          "....."),
+# ---------------------------------------------------------------- pixel text
+
+FONT = {
+    'R': ["01110", "10001", "10001", "11110", "10100", "10010", "10001"],
+    'I': ["01110", "00100", "00100", "00100", "00100", "00100", "01110"],
+    'S': ["01111", "10000", "10000", "01110", "00001", "00001", "11110"],
+    'E': ["11111", "10000", "10000", "11110", "10000", "10000", "11111"],
+    '.': ["00000", "00000", "00000", "00000", "00000", "00110", "00110"],
 }
 
 
-def paint_text():
-    """LOOK UP. in a chunky 5x7 pixel font, pale cyan, top left."""
-    text = "LOOK UP."
-    scale = 6
-    adv = 6 * scale
-    x = 48
-    y = 48
-    col = (176, 236, 255)
+def draw_text(text, x0, y0, scale, color):
+    x = x0
     for ch in text:
-        glyph = GLYPHS[ch]
-        for gy, row in enumerate(glyph):
-            for gx, cell in enumerate(row):
-                if cell == "#":
-                    cv.rect(x + gx * scale, y + gy * scale,
-                            scale, scale, col)
-        x += adv
+        glyph = FONT[ch]
+        for ri, row in enumerate(glyph):
+            for ci, bit in enumerate(row):
+                if bit == '1':
+                    for dy in range(scale):
+                        span(x + ci * scale, x + (ci + 1) * scale - 1,
+                             y0 + ri * scale + dy, color)
+        x += 6 * scale
 
 
-# ---------------------------------------------------------------- vignette
-def paint_vignette():
-    """Gently darken the corners so the glow in the middle holds the eye."""
-    fx = [1.0 - 0.30 * ((xx - 512) / 512.0) ** 2 for xx in range(W)]
-    fy = [1.0 - 0.30 * ((yy - 512) / 512.0) ** 2 for yy in range(H)]
-    for y in range(H):
-        fyy = fy[y]
-        row = cv.rows[y]
-        for x in range(W):
-            f = fx[x] * fyy
-            if f < 0.999:
-                i = x * 3
-                row[i] = int(row[i] * f)
-                row[i + 1] = int(row[i + 1] * f)
-                row[i + 2] = int(row[i + 2] * f)
+def draw_title():
+    scale = 11
+    width = 5 * 6 * scale - scale  # "RISE." = 5 glyphs
+    x0 = 512 - width // 2
+    y0 = 895
+    # dark band behind the text so it reads over ribbons + sea
+    for y in range(880, 986):
+        span_alpha(320, 704, y, (2, 6, 16), 110)
+    # outline (4 offsets) then gold face
+    for ox, oy in [(-4, 0), (4, 0), (0, -4), (0, 4)]:
+        draw_text("RISE.", x0 + ox, y0 + oy, scale, (20, 6, 2))
+    draw_text("RISE.", x0, y0, scale, (255, 210, 63))
 
 
-# ---------------------------------------------------------------- PNG out
-def _chunk(kind, data):
-    body = kind + data
-    return (struct.pack(">I", len(data)) + body +
-            struct.pack(">I", crc32(body) & 0xFFFFFFFF))
+# ---------------------------------------------------------------- PNG writer
 
-
-def write_png(path):
-    """Truecolour PNG, 8 bit, one IDAT. Every scanline uses the Up filter,
-    which suits the smooth vertical gradients in this image."""
-    ihdr = struct.pack(">IIBBBBB", W, H, 8, 2, 0, 0, 0)
+def write_png(path, w, h, data):
     raw = bytearray()
-    prev = bytearray(W * 3)
-    for y in range(H):
-        row = cv.rows[y]
-        raw.append(2)  # filter: Up
-        for i in range(W * 3):
-            raw.append((row[i] - prev[i]) & 0xFF)
-        prev = row
-    png = (b"\x89PNG\r\n\x1a\n"
-           + _chunk(b"IHDR", ihdr)
-           + _chunk(b"IDAT", zlib.compress(bytes(raw), 9))
-           + _chunk(b"IEND", b""))
-    with open(path, "wb") as fh:
-        fh.write(png)
-    return len(png)
+    stride = w * 3
+    for y in range(h):
+        raw.append(0)  # filter: none
+        raw += data[y * stride:(y + 1) * stride]
+    compressed = zlib.compress(bytes(raw), 6)
+
+    def chunk(typ, payload):
+        out = struct.pack(">I", len(payload)) + typ + payload
+        out += struct.pack(">I", zlib.crc32(typ + payload) & 0xFFFFFFFF)
+        return out
+
+    png = b"\x89PNG\r\n\x1a\n"
+    png += chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+    png += chunk(b"IDAT", compressed)
+    png += chunk(b"IEND", b"")
+    with open(path, "wb") as f:
+        f.write(png)
 
 
-# ---------------------------------------------------------------- run
 def main():
-    paint_sky()
-    paint_clouds()
-    paint_stars()
-    paint_bell()
-    paint_beam()
-    paint_tentacles()
-    paint_arms()
-    paint_city()
-    paint_plane()
-    paint_birds()
-    paint_text()
-    paint_vignette()
-    outdir = os.environ.get("MAKEFUN_OUTPUT_DIR") or os.path.dirname(
-        os.path.abspath(__file__))
-    os.makedirs(outdir, exist_ok=True)
-    path = os.path.join(outdir, "entry.png")
-    size = write_png(path)
-    print(f"wrote {path} ({size} bytes, {W}x{H})")
+    rng = random.Random(SEED)
+    draw_sky(rng)
+    # warm horizon glow, then the sea over its lower half
+    radial_glow(512, 800, 520, 240, (255, 90, 0), 85)
+    draw_sea(rng)
+    # big fire glow behind the phoenix
+    radial_glow(512, 470, 430, 400, (255, 110, 0), 110)
+    # tail ribbons (behind body): dark, mid, bright core per ribbon
+    for x0, ph in [(400, 0.0), (445, 0.9), (480, 1.8), (512, 2.7),
+                   (544, 3.6), (579, 4.5), (624, 5.4)]:
+        ribbon(x0, ph, 26, (200, 40, 0))
+        ribbon(x0, ph, 15, (255, 138, 0))
+        ribbon(x0, ph, 7, (255, 210, 63))
+    wing(False)
+    wing(True)
+    draw_body()
+    draw_embers(rng)
+    draw_title()
+    write_png("entry.png", W, H, buf)
+    print("wrote entry.png 1024x1024")
 
 
 if __name__ == "__main__":
